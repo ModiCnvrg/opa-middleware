@@ -1,7 +1,11 @@
 package internal
 
 import (
+	"context"
+	"fmt"
 	"github.com/Joffref/opa-middleware/config"
+	"github.com/open-policy-agent/opa/rego"
+	assert "github.com/stretchr/testify/require"
 	"net/http"
 	"testing"
 	"time"
@@ -128,4 +132,84 @@ allow {
 			}
 		})
 	}
+}
+
+func TestQuery(t *testing.T) {
+	input := map[string]interface{}{
+		"role": "admin",
+		"path": "/admin/api1",
+		// Add any other relevant input data
+	}
+	allowed, err := evaluatePolicy(input)
+	assert.Truef(t, allowed, "allowed: %v err: %v", allowed, err)
+
+	input = map[string]interface{}{
+		"role": "member",
+		"path": "/admin/api1",
+		// Add any other relevant input data
+	}
+	allowed, err = evaluatePolicy(input)
+	assert.Falsef(t, allowed, "input: %v", input)
+
+	input = map[string]interface{}{
+		"role": "member",
+		"path": "/services/api1",
+		// Add any other relevant input data
+	}
+	allowed, err = evaluatePolicy(input)
+	assert.Truef(t, allowed, "input: %v", input)
+}
+
+func evaluatePolicy(input interface{}) (bool, error) {
+	policy := `
+package authz
+default allow = true
+
+isAdminRole = {"admin"}
+
+onlyAdminAPI = {
+    "/admin/api1",
+    "/admin/api2",
+    "/admin/api3"
+}
+
+allow {
+	isAdminRole[input.role]
+	onlyAdminAPI[input.path]
+}
+
+allow {
+	not isAdminRole[input.role]
+	not onlyAdminAPI[input.path]
+}
+
+`
+
+	// Create a new Rego module using the policy string
+	module, err := rego.New(rego.Query("allow = data.authz.allow"),
+		rego.Module("policy.rego", policy),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		fmt.Printf("Failed to load Rego policy: %v\n", err)
+		return false, err
+	}
+
+	// Construct the input data for policy evaluation
+
+	// Evaluate the query against the loaded policy
+	results, err := module.Eval(context.Background(), rego.EvalInput(input))
+	if err != nil {
+		fmt.Printf("Failed to evaluate query: %v\n", err)
+		return false, err
+	}
+
+	// Extract the result of the query
+	allow, ok := results[0].Bindings["allow"].(bool)
+	if !ok {
+		fmt.Println("Invalid result")
+		return false, err
+	}
+
+	fmt.Println("Allow:", allow)
+	return allow, nil
 }
